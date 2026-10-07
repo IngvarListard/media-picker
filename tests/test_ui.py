@@ -28,6 +28,169 @@ class WindowTests(unittest.TestCase):
             settings.setValue(f"paths/{kind}", str(root))
         return MediaPicker(settings)
 
+    def test_selected_episode_is_restored_without_launching(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            videos = [root / f'Show {number}.mkv' for number in ('02', '03')]
+            for video in videos:
+                video.touch()
+            window = self.window_for(root)
+            try:
+                for video in videos:
+                    if video == videos[0]:
+                        self.select_file(window, 'video', video)
+                    else:
+                        with patch('media_picker.subprocess.Popen') as popen:
+                            window.next.click()
+                        popen.assert_called_once()
+                    saved = QSettings(str(root / 'settings.ini'), QSettings.Format.IniFormat)
+                    self.assertEqual(saved.value('selection/video'), str(video))
+                    window.close()
+                    with patch('media_picker.subprocess.Popen') as popen:
+                        window = MediaPicker(saved)
+                    popen.assert_not_called()
+                    self.assertEqual(window.selected['video'], video)
+                    self.assertEqual(window.lists['video'].currentItem().data(PATH_ROLE), str(video))
+                    self.assertEqual(window.path_fields['video'].text(), str(video))
+                    self.assertTrue(window.watch.isEnabled())
+                    self.assertTrue(window.next.isEnabled())
+            finally:
+                window.close()
+
+    def test_saved_episode_must_exist_in_current_folder_and_navigation_clears_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video = root / 'Show 02.mkv'
+            video.touch()
+            child = root / 'child'
+            child.mkdir()
+            window = self.window_for(root)
+            self.select_file(window, 'video', video)
+            window.open_directory('video', child)
+            window.close()
+            settings = QSettings(str(root / 'settings.ini'), QSettings.Format.IniFormat)
+            self.assertEqual(settings.value('selection/video'), '')
+            for folder, removed in ((child, False), (root, True)):
+                if removed:
+                    video.unlink()
+                settings.setValue('paths/video', str(folder))
+                settings.setValue('selection/video', str(video))
+                with patch('media_picker.subprocess.Popen') as popen:
+                    window = MediaPicker(settings)
+                try:
+                    popen.assert_not_called()
+                    self.assertEqual(window.directories['video'], folder)
+                    self.assertIsNone(window.selected['video'])
+                    self.assertFalse(window.watch.isEnabled())
+                    self.assertFalse(window.next.isEnabled())
+                finally:
+                    window.close()
+
+    def test_mpv_arguments_save_exact_text_without_launching(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            window = self.window_for(root)
+            self.assertEqual(window.mpv_arguments.text(), "")
+            for text in ('  --sub-font="Noto Sans"  ', '--title="unfinished', ''):
+                with self.subTest(text=text), patch("media_picker.subprocess.Popen") as popen:
+                    window.mpv_arguments.setText(text)
+                    saved = QSettings(str(root / "settings.ini"), QSettings.Format.IniFormat)
+                    self.assertEqual(saved.value("options/mpv_arguments"), text)
+                    window.close()
+                    window = MediaPicker(saved)
+                    self.assertEqual(window.mpv_arguments.text(), text)
+                    popen.assert_not_called()
+            window.close()
+
+    def test_mpv_arguments_order_quotes_and_literals_for_both_actions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            videos = [root / f"Show {number}.mkv" for number in ('02', '03')]
+            for video in videos:
+                video.touch()
+                video.with_suffix('.mka').touch()
+                video.with_suffix('.ass').touch()
+            window = self.window_for(root)
+            try:
+                self.select_file(window, "video", videos[0])
+                self.select_file(window, "audio", videos[0].with_suffix('.mka'))
+                self.select_file(window, "subtitle", videos[0].with_suffix('.ass'))
+                window.mpv_arguments.setText(
+                    '--fullscreen --sub-font="Noto Sans" --volume=20 --volume=80 '
+                    "--sid=no --title='$HOME; echo * $(date)' --audio-file='extra audio.mka' "
+                    '--sub-file="extra signs.ass" --osd-font=Noto\\ Sans '
+                    "--vf='lavfi=[drawtext=text=\"hello world\"]'"
+                )
+                for button, video in ((window.watch, videos[0]), (window.next, videos[1])):
+                    with patch("media_picker.subprocess.Popen") as popen:
+                        button.click()
+                    popen.assert_called_once_with([
+                        'mpv', '--audio-file=' + str(video.with_suffix('.mka')),
+                        '--sub-file=' + str(video.with_suffix('.ass')),
+                        '--fullscreen', '--sub-font=Noto Sans', '--volume=20', '--volume=80',
+                        '--sid=no', '--title=$HOME; echo * $(date)',
+                        '--audio-file=extra audio.mka', '--sub-file=extra signs.ass',
+                        '--osd-font=Noto Sans', '--vf=lavfi=[drawtext=text="hello world"]',
+                        '--', str(video),
+                    ], start_new_session=True)
+            finally:
+                window.close()
+
+    def test_invalid_mpv_arguments_block_both_actions_and_can_be_corrected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first, second = root / 'Show 02.mkv', root / 'Show 03.mkv'
+            first.touch()
+            second.touch()
+            window = self.window_for(root)
+            try:
+                for text in ('--title="unfinished', '--title=unfinished\\', '--volume 80',
+                             'extra.mkv', '-', '--', '--{', '--}', '""', '--title=bad\0value'):
+                    with self.subTest(text=text):
+                        self.select_file(window, "video", first)
+                        window.mpv_arguments.setText(text)
+                        with patch("media_picker.subprocess.Popen") as popen, \
+                                patch("media_picker.QMessageBox.warning") as warning:
+                            window.watch.click()
+                            window.next.click()
+                        popen.assert_not_called()
+                        self.assertEqual(warning.call_count, 2)
+                        self.assertEqual(window.selected['video'], second)
+                        self.assertEqual(window.mpv_arguments.text(), text)
+                for text in ('', '   ', '--an-unknown-option=1'):
+                    window.mpv_arguments.setText(text)
+                    with patch("media_picker.subprocess.Popen") as popen:
+                        window.watch.click()
+                    expected = ['--an-unknown-option=1'] if text.startswith('--') else []
+                    popen.assert_called_once_with(
+                        ['mpv', *expected, '--', str(second)], start_new_session=True)
+                window.mpv_arguments.setText('--sid=no')
+                first.unlink()
+                self.select_file(window, 'video', first)
+                with patch("media_picker.subprocess.Popen") as popen, \
+                        patch("media_picker.QMessageBox.warning") as warning:
+                    window.watch.click()
+                popen.assert_not_called()
+                warning.assert_called_once()
+                self.select_file(window, 'video', second)
+                window.issues['audio'] = 'Missing source'
+                with patch("media_picker.subprocess.Popen") as popen:
+                    window.launch()
+                popen.assert_not_called()
+            finally:
+                window.close()
+
+    def test_mpv_arguments_save_error_keeps_text_and_reports_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            window = self.window_for(Path(tmp))
+            try:
+                with patch.object(window.settings, 'status', return_value=QSettings.Status.AccessError):
+                    window.mpv_arguments.setText('--fullscreen')
+                self.assertEqual(window.mpv_arguments.text(), '--fullscreen')
+                self.assertIn('сохран', window.mpv_save_status.text().lower())
+            finally:
+                window.close()
+
     def test_next_episode_launches_same_sources_or_video_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -51,9 +214,10 @@ class WindowTests(unittest.TestCase):
                     window.next.click()
                 self.assertEqual(window.selected["video"], videos[1])
                 self.assertEqual(popen.call_args.args[0], [
-                    "mpv", str(videos[1]),
+                    "mpv",
                     "--audio-file=" + str(audio_dir / f"{videos[1].stem}.mka"),
                     "--sub-file=" + str(sub_dir / f"{videos[1].stem}.ass"),
+                    "--", str(videos[1]),
                 ])
             finally:
                 window.close()
@@ -64,7 +228,7 @@ class WindowTests(unittest.TestCase):
                 self.assertTrue(bare.next.isEnabled())
                 with patch("media_picker.subprocess.Popen") as popen:
                     bare.next.click()
-                self.assertEqual(popen.call_args.args[0], ["mpv", str(videos[1])])
+                self.assertEqual(popen.call_args.args[0], ["mpv", "--", str(videos[1])])
             finally:
                 bare.close()
 
@@ -120,7 +284,7 @@ class WindowTests(unittest.TestCase):
                 with patch("media_picker.subprocess.Popen") as popen:
                     window.next.click()
                 self.assertEqual(window.selected["video"], second)
-                self.assertEqual(popen.call_args.args[0], ["mpv", str(second)])
+                self.assertEqual(popen.call_args.args[0], ["mpv", "--", str(second)])
             finally:
                 window.close()
 
@@ -259,7 +423,7 @@ class WindowTests(unittest.TestCase):
                     popen.assert_not_called()
                     window.lists["audio"].setCurrentRow(0)
                     window.launch()
-                    self.assertEqual(popen.call_args.args[0], ["mpv", str(video)])
+                    self.assertEqual(popen.call_args.args[0], ["mpv", "--", str(video)])
             finally:
                 window.close()
 
@@ -313,9 +477,10 @@ class WindowTests(unittest.TestCase):
                 with patch("media_picker.subprocess.Popen") as popen:
                     window.launch()
                     self.assertEqual(popen.call_args.args[0], [
-                        "mpv", str(root / "Фильм 02.mkv"),
+                        "mpv",
                         "--audio-file=" + str(window.selected["audio"]),
                         "--sub-file=" + str(root / "Subs" / "Фильм 02.ass"),
+                        "--", str(root / "Фильм 02.mkv"),
                     ])
                 window.lists["subtitle"].setCurrentRow(0)
                 self.assertIsNone(window.selected["subtitle"])

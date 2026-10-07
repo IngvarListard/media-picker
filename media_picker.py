@@ -1,5 +1,6 @@
 """Browse local media and launch mpv with optional external tracks."""
 
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +18,21 @@ PATH_ROLE = Qt.ItemDataRole.UserRole
 TYPE_ROLE = Qt.ItemDataRole.UserRole + 1
 KINDS = ("video", "audio", "subtitle")
 NAMES = {"video": "Видео", "audio": "Аудио", "subtitle": "Субтитры"}
+
+
+def parse_mpv_arguments(text: str) -> list[str]:
+    try:
+        arguments = shlex.split(text, comments=False, posix=True)
+    except ValueError as error:
+        raise ValueError("Проверьте парные кавычки и экранирование обратной косой чертой.") from error
+    for argument in arguments:
+        if (not argument.startswith("-") or argument in {"-", "--", "--{", "--}"}
+                or "\0" in argument):
+            raise ValueError(
+                f"Недопустимый аргумент: {argument!r}. Используйте ключи --имя=значение; "
+                "значения с пробелами заключайте в кавычки."
+            )
+    return arguments
 
 
 def file_item(path: Path, label: str, kind: str) -> QListWidgetItem:
@@ -77,6 +93,20 @@ class MediaPicker(QWidget):
         controls.addWidget(self.auto)
         controls.addStretch()
         layout.addLayout(controls)
+        arguments_row = QHBoxLayout()
+        arguments_label = QLabel("Ключи &mpv:")
+        self.mpv_arguments = QLineEdit(str(self.settings.value("options/mpv_arguments", "")))
+        self.mpv_arguments.setAccessibleName("Ключи mpv")
+        self.mpv_arguments.setPlaceholderText('--fullscreen --sub-font="Noto Sans"')
+        arguments_label.setBuddy(self.mpv_arguments)
+        arguments_row.addWidget(arguments_label)
+        arguments_row.addWidget(self.mpv_arguments)
+        layout.addLayout(arguments_row)
+        self.mpv_save_status = QLabel()
+        self.mpv_save_status.setWordWrap(True)
+        self.mpv_save_status.hide()
+        layout.addWidget(self.mpv_save_status)
+        self.mpv_arguments.textChanged.connect(self.save_mpv_arguments)
         self.watch = QPushButton("▶ Смотреть")
         self.watch.setEnabled(False)
         self.next = QPushButton("Следующая серия")
@@ -92,6 +122,13 @@ class MediaPicker(QWidget):
         self.next.clicked.connect(self.next_episode)
         for kind in KINDS:
             self.fill(kind)
+        saved_video = str(self.settings.value("selection/video", ""))
+        for row in range(self.lists["video"].count()):
+            entry = self.lists["video"].item(row)
+            if entry.data(TYPE_ROLE) == "file" and entry.data(PATH_ROLE) == saved_video:
+                self.lists["video"].setCurrentRow(row)
+                self.lists["video"].scrollToItem(entry)
+                break
 
     def make_panel(self, kind: str) -> QGroupBox:
         box = QGroupBox(NAMES[kind])
@@ -220,6 +257,8 @@ class MediaPicker(QWidget):
 
     def video_changed(self):
         video = self.selected["video"]
+        self.settings.setValue("selection/video", str(video) if video else "")
+        self.settings.sync()
         self.status_labels["video"].setText("")
         for kind in ("audio", "subtitle"):
             self.selected[kind] = None
@@ -321,6 +360,13 @@ class MediaPicker(QWidget):
             self.snapshot = scan_tracks(root, self.extensions["audio"], self.extensions["subtitle"])
             self.snapshot_root = root
 
+    def save_mpv_arguments(self, text: str):
+        self.settings.setValue("options/mpv_arguments", text)
+        self.settings.sync()
+        failed = self.settings.status() != QSettings.Status.NoError
+        self.mpv_save_status.setText("Не удалось сохранить ключи mpv." if failed else "")
+        self.mpv_save_status.setVisible(failed)
+
     def launch(self):
         video = self.selected["video"]
         if not video or any(self.issues.values()):
@@ -329,11 +375,17 @@ class MediaPicker(QWidget):
             if path and not path.is_file():
                 QMessageBox.warning(self, "Файл недоступен", f"Файл не найден:\n{path}")
                 return
-        command = ["mpv", str(video)]
+        try:
+            arguments = parse_mpv_arguments(self.mpv_arguments.text())
+        except ValueError as error:
+            QMessageBox.warning(self, "Ошибка в ключах mpv", str(error))
+            return
+        command = ["mpv"]
         if self.selected["audio"]:
             command.append("--audio-file=" + str(self.selected["audio"]))
         if self.selected["subtitle"]:
             command.append("--sub-file=" + str(self.selected["subtitle"]))
+        command.extend([*arguments, "--", str(video)])
         try:
             subprocess.Popen(command, start_new_session=True)
         except OSError as error:
