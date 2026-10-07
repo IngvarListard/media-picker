@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Media Picker
+Comment=Смотреть локальное видео в mpv с внешними аудио и субтитрами
+Exec=media-picker
+Icon=io.github.IngvarListard.MediaPicker
+Terminal=false
+Categories=AudioVideo;Player;
+Keywords=video;mpv;subtitle;audio;

@@ -5,19 +5,33 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QPointF, QSettings, QStandardPaths, Qt
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
-from files import (DEFAULT_EXTENSIONS, is_next_episode, list_directory, matching,
-                   parse_extensions, source_folder, source_matches)
+from files import (DEFAULT_EXTENSIONS, build_mpv_command, find_mpv, is_next_episode,
+                   list_directory, matching, parse_extensions, source_folder,
+                   source_matches)
 
 PATH_ROLE = Qt.ItemDataRole.UserRole
 TYPE_ROLE = Qt.ItemDataRole.UserRole + 1
 KINDS = ("video", "audio", "subtitle")
 NAMES = {"video": "Видео", "audio": "Аудио", "subtitle": "Субтитры"}
+
+MPV_MISSING_SHORT = "mpv не найден — установите его, чтобы смотреть видео"
+APP_ID = "io.github.IngvarListard.MediaPicker"
+ICON_COLOR = "#2b3a67"
+MPV_MISSING_HINT = (
+    "Для просмотра нужен mpv, установите его сами:\n"
+    "  Debian/Ubuntu:  sudo apt install mpv\n"
+    "  Fedora:         sudo dnf install mpv\n"
+    "  Arch:           sudo pacman -S mpv\n"
+    "  Flatpak:        flatpak install flathub io.mpv.Mpv\n"
+    "После установки нажмите «Смотреть» снова — перезапускать приложение не нужно."
+)
 
 
 def parse_mpv_arguments(text: str) -> list[str]:
@@ -35,6 +49,27 @@ def parse_mpv_arguments(text: str) -> list[str]:
     return arguments
 
 
+def icon_pixmap(size: int = 256) -> QPixmap:
+    """Play badge used as the window icon and as the packaged icon file."""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(ICON_COLOR))
+    radius = size * 0.22
+    painter.drawRoundedRect(0, 0, size, size, radius, radius)
+    painter.setBrush(QColor("#ffffff"))
+    left, top, height = size * 0.38, size * 0.31, size * 0.38
+    painter.drawPolygon(QPolygonF([
+        QPointF(left, top),
+        QPointF(left, top + height),
+        QPointF(left + height * 0.87, top + height / 2),
+    ]))
+    painter.end()
+    return pixmap
+
+
 def file_item(path: Path, label: str, kind: str) -> QListWidgetItem:
     entry = QListWidgetItem(label)
     entry.setData(PATH_ROLE, str(path))
@@ -49,7 +84,10 @@ class MediaPicker(QWidget):
         self.settings = settings or QSettings(
             QSettings.Format.IniFormat, QSettings.Scope.UserScope, "MediaPicker", "MediaPicker"
         )
-        default_dir = Path.home() / "Downloads"
+        downloads = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.DownloadLocation
+        )
+        default_dir = Path(downloads) if downloads else Path.home()
         if not default_dir.is_dir():
             default_dir = Path.home()
         self.directories = {}
@@ -129,6 +167,11 @@ class MediaPicker(QWidget):
                 self.lists["video"].setCurrentRow(row)
                 self.lists["video"].scrollToItem(entry)
                 break
+        if self.mpv() is None:
+            self.status_labels["video"].setText(MPV_MISSING_SHORT)
+
+    def mpv(self) -> str | None:
+        return find_mpv(str(self.settings.value("options/mpv_path", "")))
 
     def make_panel(self, kind: str) -> QGroupBox:
         box = QGroupBox(NAMES[kind])
@@ -380,12 +423,12 @@ class MediaPicker(QWidget):
         except ValueError as error:
             QMessageBox.warning(self, "Ошибка в ключах mpv", str(error))
             return
-        command = ["mpv"]
-        if self.selected["audio"]:
-            command.append("--audio-file=" + str(self.selected["audio"]))
-        if self.selected["subtitle"]:
-            command.append("--sub-file=" + str(self.selected["subtitle"]))
-        command.extend([*arguments, "--", str(video)])
+        mpv = self.mpv()
+        if mpv is None:
+            QMessageBox.warning(self, "mpv не найден", MPV_MISSING_HINT)
+            return
+        command = build_mpv_command(mpv, video, self.selected["audio"],
+                                    self.selected["subtitle"], arguments)
         try:
             subprocess.Popen(command, start_new_session=True)
         except OSError as error:
@@ -394,6 +437,8 @@ class MediaPicker(QWidget):
 
 def main():
     app = QApplication(sys.argv)
+    app.setDesktopFileName(APP_ID)
+    app.setWindowIcon(QIcon(icon_pixmap()))
     window = MediaPicker()
     window.show()
     return app.exec()

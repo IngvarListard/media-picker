@@ -15,6 +15,13 @@ APP = QApplication.instance() or QApplication([])
 
 
 class WindowTests(unittest.TestCase):
+    def setUp(self):
+        self.pin_which("mpv")
+
+    def pin_which(self, found):
+        """Pin PATH lookup, so launched commands stay deterministic."""
+        self.enterContext(patch("files.shutil.which", return_value=found))
+
     def select_file(self, window, kind, path):
         for row in range(window.lists[kind].count()):
             if window.lists[kind].item(row).data(PATH_ROLE) == str(path):
@@ -22,10 +29,13 @@ class WindowTests(unittest.TestCase):
                 return
         self.fail(f"File not shown in {kind}: {path}")
 
-    def window_for(self, root):
+    def window_for(self, root, mpv="mpv"):
+        """`mpv` is what the PATH lookup finds: "mpv", a path, or None."""
         settings = QSettings(str(root / "settings.ini"), QSettings.Format.IniFormat)
         for kind in ("video", "audio", "subtitle"):
             settings.setValue(f"paths/{kind}", str(root))
+        if mpv != "mpv":
+            self.pin_which(mpv)
         return MediaPicker(settings)
 
     def test_selected_episode_is_restored_without_launching(self):
@@ -487,5 +497,91 @@ class WindowTests(unittest.TestCase):
                 window.mode_boxes["subtitle"].setChecked(False)
                 self.assertIsNone(window.selected["subtitle"])
                 self.assertEqual(window.directories["subtitle"], root)
+            finally:
+                window.close()
+
+    def test_missing_mpv_keeps_selection_and_suggests_install_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video, track = root / "Фильм 01.mkv", root / "Фильм 01.mka"
+            video.touch()
+            track.touch()
+            window = self.window_for(root, mpv=None)
+            try:
+                self.assertIn("mpv", window.status_labels["video"].text())
+                self.select_file(window, "audio", track)
+                self.select_file(window, "video", video)
+                self.assertTrue(window.watch.isEnabled())
+                with patch("media_picker.QMessageBox.warning") as warning, \
+                        patch("media_picker.subprocess.Popen") as popen:
+                    window.watch.click()
+                popen.assert_not_called()
+                warning.assert_called_once()
+                message = " ".join(str(part) for part in warning.call_args.args)
+                for command in ("apt install mpv", "dnf install mpv",
+                                "pacman -S mpv", "flatpak install"):
+                    self.assertIn(command, message)
+                self.assertEqual(window.selected["video"], video)
+                self.assertEqual(window.selected["audio"], track)
+            finally:
+                window.close()
+
+    def test_configured_mpv_path_wins_over_path_lookup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video, custom = root / "Фильм 01.mkv", root / "my mpv"
+            video.touch()
+            custom.touch()
+            settings = QSettings(str(root / "settings.ini"), QSettings.Format.IniFormat)
+            for kind in ("video", "audio", "subtitle"):
+                settings.setValue(f"paths/{kind}", str(root))
+            settings.setValue("options/mpv_path", str(custom))
+            window = MediaPicker(settings)
+            try:
+                self.select_file(window, "video", video)
+                with patch("media_picker.subprocess.Popen") as popen:
+                    window.watch.click()
+                self.assertEqual(popen.call_args.args[0][0], str(custom))
+            finally:
+                window.close()
+
+    def test_wrong_configured_mpv_path_falls_back_to_path_lookup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video = root / "Фильм 01.mkv"
+            video.touch()
+            settings = QSettings(str(root / "settings.ini"), QSettings.Format.IniFormat)
+            for kind in ("video", "audio", "subtitle"):
+                settings.setValue(f"paths/{kind}", str(root))
+            settings.setValue("options/mpv_path", str(root / "missing"))
+            window = MediaPicker(settings)
+            try:
+                self.select_file(window, "video", video)
+                with patch("media_picker.subprocess.Popen") as popen:
+                    window.watch.click()
+                self.assertEqual(popen.call_args.args[0][0], "mpv")
+            finally:
+                window.close()
+
+    def test_wrong_configured_mpv_path_without_mpv_reports_hint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video = root / "Фильм 01.mkv"
+            video.touch()
+            settings = QSettings(str(root / "settings.ini"), QSettings.Format.IniFormat)
+            for kind in ("video", "audio", "subtitle"):
+                settings.setValue(f"paths/{kind}", str(root))
+            settings.setValue("options/mpv_path", str(root / "missing"))
+            self.pin_which(None)
+            window = MediaPicker(settings)
+            try:
+                self.select_file(window, "video", video)
+                with patch("media_picker.QMessageBox.warning") as warning, \
+                        patch("media_picker.QMessageBox.critical") as critical, \
+                        patch("media_picker.subprocess.Popen") as popen:
+                    window.watch.click()
+                popen.assert_not_called()
+                critical.assert_not_called()
+                warning.assert_called_once()
             finally:
                 window.close()

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.IngvarListard.MediaPicker</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>Media Picker</name>
+  <summary>Видео в mpv с внешними аудио и субтитрами</summary>
+
+  <description>
+    <p>
+      Окно с тремя панелями: видео, аудио и субтитры. Пользователь выбирает видео
+      и, при желании, внешнюю аудиодорожку и субтитры, а затем запускает просмотр в mpv.
+      Есть поиск дорожек во вложенных папках, автовыбор единственного совпадения
+      и переход к следующей серии.
+    </p>
+    <p>
+      mpv устанавливается отдельно: приложение сообщает об этом и подсказывает
+      команду установки для распространённых дистрибутивов.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.IngvarListard.MediaPicker.desktop</launchable>
+  <url type="homepage">https://github.com/IngvarListard/media-picker</url>
+  <url type="vcs-browser">https://github.com/IngvarListard/media-picker</url>
+
+  <categories>
+    <category>AudioVideo</category>
+    <category>Player</category>
+  </categories>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-10-08"/>
+  </releases>
+</component>

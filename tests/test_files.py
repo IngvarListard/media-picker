@@ -3,8 +3,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from files import (is_next_episode, list_directory, matching, parse_extensions,
-                   scan_tracks, source_folder, source_matches)
+from files import (build_mpv_command, find_mpv, is_next_episode, list_directory,
+                   matching, parse_extensions, scan_tracks, source_folder,
+                   source_matches)
 
 
 class FileSelectionTests(unittest.TestCase):
@@ -91,6 +92,42 @@ class FileSelectionTests(unittest.TestCase):
                 audio, subtitles, errors = scan_tracks(root, {".mka"}, {".ass"})
             self.assertEqual(subtitles, [second / "Фильм 02.ass"])
             self.assertEqual(errors, [first])
+
+
+class MpvLaunchTests(unittest.TestCase):
+    def test_find_mpv_prefers_explicit_existing_path_then_path_lookup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            explicit = root / "my mpv"
+            explicit.touch()
+            self.assertEqual(find_mpv(str(explicit), path=str(root)), str(explicit))
+            self.assertEqual(find_mpv("~nonexistent", path=str(root)), None)
+
+            lookup = root / "bin"
+            lookup.mkdir()
+            found = lookup / "mpv"
+            found.touch()
+            found.chmod(0o755)
+            self.assertEqual(find_mpv("", path=str(lookup)), str(found))
+            self.assertEqual(find_mpv(""), find_mpv("", path=None))
+            self.assertEqual(find_mpv(str(root / "missing"), path=str(lookup)), str(found))
+            self.assertEqual(find_mpv(str(root / "missing"), path=str(root)), None)
+
+    def test_build_mpv_command_keeps_track_keys_separator_and_video_order(self):
+        video = Path("/shows/Show 02.mkv")
+        self.assertEqual(build_mpv_command("mpv", video),
+                         ["mpv", "--", str(video)])
+        self.assertEqual(
+            build_mpv_command("mpv", video, Path("/tracks/Show 02.mka"),
+                              Path("/subs/Show 02.ass"),
+                              ["--fullscreen", "--volume=80", "--volume=20"]),
+            ["mpv", "--audio-file=/tracks/Show 02.mka",
+             "--sub-file=/subs/Show 02.ass",
+             "--fullscreen", "--volume=80", "--volume=20",
+             "--", str(video)],
+        )
+        self.assertEqual(build_mpv_command("mpv", video, None, Path("/s/Show 02.ass")),
+                         ["mpv", "--sub-file=/s/Show 02.ass", "--", str(video)])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,29 @@
+name: release
+
+# Публикация в публичный каталог идёт через доверенную публикацию GitHub:
+# долгоживущих токенов нет. Владельцу проекта нужно один раз создать проект
+# в каталоге и добавить в нём publisher для этого репозитория, workflow
+# `release.yml` и окружения `pypi`.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build
+      - run: uvx twine check dist/*
+      - run: uv publish --trusted-publishing always
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

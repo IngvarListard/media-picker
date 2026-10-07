@@ -1,7 +1,8 @@
-"""Local file listing and track matching for Media Picker."""
+"""Local file listing, track matching and mpv launch arguments."""
 
 import os
 import re
+import shutil
 from pathlib import Path
 
 VIDEO = {".mkv", ".mp4", ".webm", ".avi"}
@@ -61,6 +62,31 @@ def source_matches(video: Path, source: Path, extensions: set[str]) -> list[Path
     folder = source if source.is_absolute() else video.parent / source
     return matching(video, [path for path in list_directory(folder, extensions)
                             if path.is_file()])
+
+
+def find_mpv(explicit: str, path: str | None = None) -> str | None:
+    """Preferred mpv path from settings, otherwise the first mpv in PATH."""
+    if explicit:
+        try:
+            candidate = Path(explicit).expanduser()
+        except RuntimeError:
+            candidate = Path(explicit)
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which("mpv", path=path)
+
+
+def build_mpv_command(mpv: str, video: Path, audio: Path | None = None,
+                      subtitle: Path | None = None,
+                      arguments: list[str] | None = None) -> list[str]:
+    """Argument list: chosen tracks, user keys, separator, video."""
+    command = [mpv]
+    if audio:
+        command.append(f"--audio-file={audio}")
+    if subtitle:
+        command.append(f"--sub-file={subtitle}")
+    command.extend(arguments or [])
+    return [*command, "--", str(video)]
 
 
 def scan_tracks(root: Path, audio_ext: set[str], subtitle_ext: set[str]
